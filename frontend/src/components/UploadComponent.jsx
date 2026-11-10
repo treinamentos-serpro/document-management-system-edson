@@ -1,10 +1,5 @@
 import { useRef, useState } from 'react';
-
-function formatFileSize(size) {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
+import { formatFileSize } from '../services/documentFormatters.js';
 
 export default function UploadComponent({ onUpload }) {
   const inputRef = useRef(null);

@@ -40,9 +40,6 @@ export async function uploadDocument(file) {
   return response.json();
 }
 
-export async function downloadDocument(id) {
-  const response = await request(
-    `/documents/${encodeURIComponent(id)}/download`,
-  );
-  return response.blob();
+export function getDocumentDownloadUrl(id) {
+  return `${API_PREFIX}/documents/${encodeURIComponent(id)}/download`;
 }

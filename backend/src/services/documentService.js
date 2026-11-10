@@ -1,10 +1,10 @@
-const { randomUUID } = require('node:crypto');
-const fs = require('node:fs/promises');
 const AppError = require('./AppError');
 
 class DocumentService {
-  constructor(documentRepository) {
+  constructor(documentRepository, { maxStorageBytes, maxDocuments }) {
     this.documentRepository = documentRepository;
+    this.maxStorageBytes = maxStorageBytes;
+    this.maxDocuments = maxDocuments;
   }
 
   async createDocument(file) {
@@ -13,22 +13,33 @@ class DocumentService {
       throw new AppError(400, 'EMPTY_FILE', 'O arquivo não pode estar vazio.');
     }
 
-    const document = {
-      id: file.filename || randomUUID(),
-      originalName: file.originalname,
-      size: file.size,
-      uploadedAt: new Date().toISOString(),
-      owner: 'local',
-    };
-
     try {
+      const storageStats = await this.documentRepository.getStorageStats();
+      if (
+        storageStats.storageBytes > this.maxStorageBytes ||
+        storageStats.documentCount > this.maxDocuments
+      ) {
+        throw new AppError(
+          507,
+          'STORAGE_LIMIT_REACHED',
+          'O limite de armazenamento da aplicação foi atingido.',
+        );
+      }
+
+      const document = {
+        id: file.filename,
+        originalName: file.originalname,
+        size: file.size,
+        uploadedAt: new Date().toISOString(),
+        owner: 'local',
+      };
+
       this.documentRepository.add(document);
+      return document;
     } catch (error) {
-      await this.documentRepository.removeFile(document.id);
+      await this.documentRepository.removeFile(file.filename);
       throw error;
     }
-
-    return document;
   }
 
   listDocuments() {
@@ -37,9 +48,9 @@ class DocumentService {
 
   async getDocumentForDownload(id) {
     const document = this.documentRepository.findById(id);
-    const filePath = this.documentRepository.getFilePath(id);
+    const fileStream = await this.documentRepository.openFile(id);
 
-    if (!document || !filePath) {
+    if (!document || !fileStream) {
       throw new AppError(
         404,
         'DOCUMENT_NOT_FOUND',
@@ -47,20 +58,7 @@ class DocumentService {
       );
     }
 
-    try {
-      await fs.access(filePath);
-    } catch (error) {
-      if (error.code === 'ENOENT') {
-        throw new AppError(
-          404,
-          'DOCUMENT_NOT_FOUND',
-          'Documento não encontrado.',
-        );
-      }
-      throw error;
-    }
-
-    return { document, filePath };
+    return { document, fileStream };
   }
 }
 

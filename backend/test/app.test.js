@@ -1,6 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
+const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const appModule = require('../src/app');
@@ -28,6 +29,38 @@ function makeUpload(name, content) {
   const form = new FormData();
   form.append('file', new Blob([content]), name);
   return form;
+}
+
+function beginPendingUpload(baseUrl) {
+  const boundary = 'dms-concurrency-test';
+  let resolveResponse;
+  let rejectResponse;
+  const response = new Promise((resolve, reject) => {
+    resolveResponse = resolve;
+    rejectResponse = reject;
+  });
+  const request = http.request(`${baseUrl}/upload`, {
+    method: 'POST',
+    headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+  }, (result) => {
+    let body = '';
+    result.setEncoding('utf8');
+    result.on('data', (chunk) => { body += chunk; });
+    result.on('end', () => {
+      resolveResponse({ status: result.statusCode, body: JSON.parse(body) });
+    });
+  });
+  request.on('error', rejectResponse);
+  request.write(
+    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="pending.txt"\r\nContent-Type: text/plain\r\n\r\npending`,
+  );
+
+  return {
+    response,
+    finish() {
+      request.end(`\r\n--${boundary}--\r\n`);
+    },
+  };
 }
 
 test('o app backend é exportado', () => {
@@ -120,8 +153,98 @@ test('rejeita arquivo ausente, vazio e maior que o limite', async () => {
       'INVALID_MULTIPART',
     );
 
+    const extraFieldForm = makeUpload('with-field.txt', 'tiny');
+    extraFieldForm.append('description', 'not accepted');
+    const extraFieldResponse = await fetch(`${baseUrl}/upload`, {
+      method: 'POST',
+      body: extraFieldForm,
+    });
+    assert.equal(extraFieldResponse.status, 400);
+    assert.equal(
+      (await extraFieldResponse.json()).error.code,
+      'INVALID_MULTIPART',
+    );
+
     const listResponse = await fetch(`${baseUrl}/documents`);
     assert.deepEqual(await listResponse.json(), []);
+  });
+});
+
+test('impede uploads que ultrapassem a cota de armazenamento', async () => {
+  await withServer({ maxStorageBytes: 4 }, async (baseUrl, storageDirectory) => {
+    const uploadResponse = await fetch(`${baseUrl}/upload`, {
+      method: 'POST',
+      body: makeUpload('over-quota.txt', '12345'),
+    });
+
+    assert.equal(uploadResponse.status, 507);
+    assert.equal(
+      (await uploadResponse.json()).error.code,
+      'STORAGE_LIMIT_REACHED',
+    );
+    assert.deepEqual(await (await fetch(`${baseUrl}/documents`)).json(), []);
+    assert.deepEqual(await fs.readdir(storageDirectory), []);
+  });
+});
+
+test('contabiliza arquivos locais sem metadados na quota', async () => {
+  await withServer({ maxStorageBytes: 4 }, async (baseUrl, storageDirectory) => {
+    await fs.writeFile(path.join(storageDirectory, 'orphaned-file'), '1234');
+
+    const uploadResponse = await fetch(`${baseUrl}/upload`, {
+      method: 'POST',
+      body: makeUpload('new.txt', 'x'),
+    });
+
+    assert.equal(uploadResponse.status, 507);
+    assert.equal(
+      (await uploadResponse.json()).error.code,
+      'STORAGE_LIMIT_REACHED',
+    );
+    assert.deepEqual(await (await fetch(`${baseUrl}/documents`)).json(), []);
+    assert.deepEqual(await fs.readdir(storageDirectory), ['orphaned-file']);
+  });
+});
+
+test('impede uploads além do limite de documentos', async () => {
+  await withServer({ maxDocuments: 1 }, async (baseUrl, storageDirectory) => {
+    const firstUpload = await fetch(`${baseUrl}/upload`, {
+      method: 'POST',
+      body: makeUpload('first.txt', 'first'),
+    });
+    assert.equal(firstUpload.status, 201);
+
+    const secondUpload = await fetch(`${baseUrl}/upload`, {
+      method: 'POST',
+      body: makeUpload('second.txt', 'second'),
+    });
+    assert.equal(secondUpload.status, 507);
+    assert.equal(
+      (await secondUpload.json()).error.code,
+      'STORAGE_LIMIT_REACHED',
+    );
+    assert.equal((await (await fetch(`${baseUrl}/documents`)).json()).length, 1);
+    assert.equal((await fs.readdir(storageDirectory)).length, 1);
+  });
+});
+
+test('limita a quantidade de uploads simultâneos', async () => {
+  await withServer({ maxConcurrentUploads: 1 }, async (baseUrl) => {
+    const pendingUpload = beginPendingUpload(baseUrl);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const rejectedUpload = await fetch(`${baseUrl}/upload`, {
+      method: 'POST',
+      body: makeUpload('second.txt', 'second'),
+    });
+    assert.equal(rejectedUpload.status, 503);
+    assert.equal(
+      (await rejectedUpload.json()).error.code,
+      'UPLOAD_CAPACITY_REACHED',
+    );
+
+    pendingUpload.finish();
+    assert.equal((await pendingUpload.response).status, 201);
   });
 });
 
@@ -133,6 +256,15 @@ test('retorna 404 para documento inexistente ou arquivo ausente', async () => {
     assert.equal(unknownResponse.status, 404);
     assert.equal(
       (await unknownResponse.json()).error.code,
+      'DOCUMENT_NOT_FOUND',
+    );
+
+    const traversalResponse = await fetch(
+      `${baseUrl}/documents/%2e%2e%2f..%2fetc%2fpasswd/download`,
+    );
+    assert.equal(traversalResponse.status, 404);
+    assert.equal(
+      (await traversalResponse.json()).error.code,
       'DOCUMENT_NOT_FOUND',
     );
 

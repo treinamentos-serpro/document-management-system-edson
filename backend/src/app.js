@@ -5,29 +5,52 @@ const DocumentService = require('./services/documentService');
 const createDocumentRouter = require('./routes/documentRoutes');
 
 const DEFAULT_MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+const DEFAULT_MAX_STORAGE_BYTES = 1024 * 1024 * 1024;
+const DEFAULT_MAX_DOCUMENTS = 1000;
+const DEFAULT_MAX_CONCURRENT_UPLOADS = 4;
 
-function parseMaxFileSize(value) {
+function parsePositiveInteger(value, name, defaultValue) {
   if (value === undefined) {
-    return DEFAULT_MAX_FILE_SIZE_BYTES;
+    return defaultValue;
   }
 
-  const maxFileSizeBytes = Number(value);
-  if (!Number.isSafeInteger(maxFileSizeBytes) || maxFileSizeBytes < 1) {
-    throw new Error('MAX_FILE_SIZE_BYTES deve ser um inteiro positivo.');
+  const parsedValue = Number(value);
+  if (!Number.isSafeInteger(parsedValue) || parsedValue < 1) {
+    throw new Error(`${name} deve ser um inteiro positivo.`);
   }
 
-  return maxFileSizeBytes;
+  return parsedValue;
 }
 
 function createApp(options = {}) {
   const storageDirectory = path.resolve(
     options.storageDirectory || path.join(__dirname, '..', 'storage'),
   );
-  const maxFileSizeBytes =
-    options.maxFileSizeBytes ??
-    parseMaxFileSize(process.env.MAX_FILE_SIZE_BYTES);
+  const maxFileSizeBytes = parsePositiveInteger(
+    options.maxFileSizeBytes ?? process.env.MAX_FILE_SIZE_BYTES,
+    'MAX_FILE_SIZE_BYTES',
+    DEFAULT_MAX_FILE_SIZE_BYTES,
+  );
+  const maxStorageBytes = parsePositiveInteger(
+    options.maxStorageBytes ?? process.env.MAX_STORAGE_BYTES,
+    'MAX_STORAGE_BYTES',
+    DEFAULT_MAX_STORAGE_BYTES,
+  );
+  const maxDocuments = parsePositiveInteger(
+    options.maxDocuments ?? process.env.MAX_DOCUMENTS,
+    'MAX_DOCUMENTS',
+    DEFAULT_MAX_DOCUMENTS,
+  );
+  const maxConcurrentUploads = parsePositiveInteger(
+    options.maxConcurrentUploads ?? process.env.MAX_CONCURRENT_UPLOADS,
+    'MAX_CONCURRENT_UPLOADS',
+    DEFAULT_MAX_CONCURRENT_UPLOADS,
+  );
   const documentRepository = new DocumentRepository(storageDirectory);
-  const documentService = new DocumentService(documentRepository);
+  const documentService = new DocumentService(documentRepository, {
+    maxStorageBytes,
+    maxDocuments,
+  });
   const app = express();
 
   app.use(express.json());
@@ -40,6 +63,7 @@ function createApp(options = {}) {
     createDocumentRouter({
       documentService,
       maxFileSizeBytes,
+      maxConcurrentUploads,
       storageDirectory,
     }),
   );
@@ -51,7 +75,10 @@ function createApp(options = {}) {
 
     let status = error.statusCode || error.status || 500;
     let code = error.code || 'INTERNAL_SERVER_ERROR';
-    let message = status >= 500 ? 'Erro interno do servidor.' : error.message;
+    let message =
+      status >= 500 && error.name !== 'AppError'
+        ? 'Erro interno do servidor.'
+        : error.message;
 
     if (error.code === 'LIMIT_FILE_SIZE') {
       status = 413;
@@ -80,10 +107,11 @@ function createApp(options = {}) {
 
 const app = createApp();
 const PORT = process.env.PORT || 3000;
+const HOST = process.env.HOST || '127.0.0.1';
 
 if (require.main === module) {
-  app.listen(PORT, () => {
-    console.log(`DMS backend ouvindo na porta ${PORT}`);
+  app.listen(PORT, HOST, () => {
+    console.log(`DMS backend ouvindo em ${HOST}:${PORT}`);
   });
 }
 

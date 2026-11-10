@@ -29,19 +29,19 @@ function createDocumentController(documentService) {
 
     async download(req, res, next) {
       try {
-        const { document, filePath } =
+        const { document, fileStream } =
           await documentService.getDocumentForDownload(req.params.id);
 
-        res.download(
-          filePath,
-          document.originalName,
-          { headers: { 'Content-Type': 'application/octet-stream' } },
-          (error) => {
-            if (error && !res.headersSent) {
-              next(error);
-            }
-          },
-        );
+        res.attachment(document.originalName);
+        res.type('application/octet-stream');
+        fileStream.on('error', (error) => {
+          if (res.headersSent) {
+            res.destroy(error);
+          } else {
+            next(error);
+          }
+        });
+        fileStream.pipe(res);
       } catch (error) {
         next(error);
       }
