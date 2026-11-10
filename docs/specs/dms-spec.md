@@ -5,7 +5,7 @@
 Permitir que uma única instância local receba, liste e disponibilize para download documentos enviados, mantendo os arquivos no filesystem local e seus metadados em memória.
 
 ## 2. Escopo
-
+ 
 ### Dentro do escopo
 
 - Envio de um documento por requisição.
